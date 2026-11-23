@@ -1,7 +1,8 @@
 ﻿param([switch]$Launch,[string]$Proxy=$env:AFTERSALES_UPDATE_PROXY)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
-$repo='nameless0710/After-sales-Assistant'
+$repo='an_602/After-sales-Assistant'
+$api="https://gitee.com/api/v5/repos/$repo"
 $branch='master'
 $requiredApp=@('lib/gson-2.13.2.jar','report-desk/report-desk-desktop.jar','report-desk/browser.cjs',
     'report-desk/browser-settings.json','report-desk/remark-aliases.json','report-desk/driver/node.exe',
@@ -31,32 +32,23 @@ function Get-LocalPath([string]$relative) {
     return $path
 }
 
-function Invoke-UpdateRequest([string]$url,[string]$destination) {
+function Invoke-UpdateRequest([string]$url,[int]$timeoutSec=10) {
     $address=if($mirror){$mirror+$url}else{$url}
-    $request=@{Uri=$address;UseBasicParsing=$true;TimeoutSec=10;MaximumRedirection=0;
-        ErrorAction='Stop';UserAgent='After-sales-Assistant-Updater'}
+    $request=@{Uri=$address;UseBasicParsing=$true;TimeoutSec=$timeoutSec;MaximumRedirection=0;
+        ErrorAction='Stop';UserAgent='After-sales-Assistant-Updater';Headers=@{Accept='application/json'}}
     if($Proxy){$request.Proxy=$Proxy}
-    if($destination){
-        $request.OutFile=$destination
-        $request.TimeoutSec=600
-        $request.MaximumRedirection=3
-        $ProgressPreference='SilentlyContinue'
-        Invoke-WebRequest @request
-    } else {
-        return (Invoke-WebRequest @request).Content | ConvertFrom-Json
-    }
+    $ProgressPreference='SilentlyContinue'
+    return (Invoke-WebRequest @request).Content | ConvertFrom-Json
 }
 
 function Get-RepositoryFiles {
-    $api="https://api.github.com/repos/$repo"
-    $head=Invoke-UpdateRequest "$api/commits/$branch"
-    $commit=$head.sha
-    $treeId=$head.commit.tree.sha
-    if($commit -cnotmatch '^[a-f0-9]{40}$' -or $treeId -cnotmatch '^[a-f0-9]{40}$'){
-        throw 'GitHub 返回的提交或文件清单标识无效。'
+    $head=Invoke-UpdateRequest "$api/branches/$branch"
+    $commit=$head.commit.sha
+    if($commit -cnotmatch '^[a-f0-9]{40}$'){
+        throw 'Gitee 返回的提交标识无效。'
     }
-    $tree=Invoke-UpdateRequest "$api/git/trees/$($treeId)?recursive=1"
-    if($tree.sha -cne $treeId -or $tree.truncated -ne $false){throw '远端文件清单不完整。'}
+    $tree=Invoke-UpdateRequest "$api/git/trees/$($commit)?recursive=1"
+    if($tree.sha -cne $commit -or $tree.truncated -ne $false){throw '远端文件清单不完整。'}
 
     $paths=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $files=@(foreach($entry in $tree.tree){
@@ -72,6 +64,14 @@ function Get-RepositoryFiles {
         if(!$paths.Contains($path)){throw "远端分支缺少 $path。请确认完整可运行版本已提交到 $branch。"}
     }
     return @{Commit=$commit;Files=$files}
+}
+
+function Save-RepositoryBlob($entry,[string]$destination) {
+    $blob=Invoke-UpdateRequest "$api/git/blobs/$($entry.sha)" 600
+    if($blob.encoding -ne 'base64' -or $null -eq $blob.content){
+        throw "Gitee 返回的文件内容无效：$($entry.path)"
+    }
+    [IO.File]::WriteAllBytes($destination,[Convert]::FromBase64String($blob.content))
 }
 
 function Test-GitBlob([string]$path,$entry) {
@@ -160,7 +160,7 @@ function Sync-Desk {
         try {$previous=Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json}
         catch {Write-Warning '本地更新记录已损坏，将重新检查文件。'}
     }
-    Write-Host "正在检查 GitHub 仓库 $repo 的 $branch 分支 ..."
+    Write-Host "正在检查 Gitee 仓库 $repo 的 $branch 分支 ..."
     $remote=Get-RepositoryFiles
     $changes=[Collections.Generic.List[object]]::new()
     $downloads=[Collections.Generic.List[object]]::new()
@@ -190,10 +190,9 @@ function Sync-Desk {
         $entry=$download.Entry
         $index++
         Write-Progress -Activity '正在同步查询台' -Status $entry.path -PercentComplete (100*$index/$downloads.Count)
-        $encoded=($entry.path.Split('/') | ForEach-Object {[uri]::EscapeDataString($_)}) -join '/'
         $incoming=Join-Path $work "$index.download"
-        Invoke-UpdateRequest "https://raw.githubusercontent.com/$repo/$($remote.Commit)/$encoded" $incoming
-        if(!(Test-GitBlob $incoming $entry)){throw "下载文件与 GitHub 记录不一致：$($entry.path)"}
+        Save-RepositoryBlob $entry $incoming
+        if(!(Test-GitBlob $incoming $entry)){throw "下载文件与 Gitee 记录不一致：$($entry.path)"}
         $changes.Add((New-FileChange $download.Target $incoming))
     }
     Write-Progress -Activity '正在同步查询台' -Completed

@@ -1,1 +1,4 @@
 static/doc/
+.update.lock
+installed-files.json
+AGENTS.md
