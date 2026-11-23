@@ -151,9 +151,22 @@ public final class Desk {
         controls(false);status.setText(message);
         new SwingWorker<List<String>,String>(){
             protected List<String> doInBackground()throws Exception{return loader.load(msg->publish(msg));}
-            protected void process(List<String> messages){status.setText(messages.get(messages.size()-1));}
+            protected void process(List<String> messages){showBrowserProgress(messages);}
             protected void done(){controls(true);try{var items=get();status.setText(" ");onLoaded.accept(items);}catch(Exception e){error(e);}}
         }.execute();
+    }
+    void showBrowserProgress(List<String> messages){
+        for(String message:messages){
+            if(!message.equals("BROWSER_WINDOW_OPENED")){
+                status.setText(message);
+                continue;
+            }
+            if(!busy || !frame.isShowing() || (frame.getExtendedState() & Frame.ICONIFIED)!=0)continue;
+            boolean requestFocus=frame.isAutoRequestFocus();
+            frame.setAutoRequestFocus(false);
+            try{frame.toFront();}
+            finally{frame.setAutoRequestFocus(requestFocus);}
+        }
     }
     void choose(String title,List<String> items,List<String> selected,boolean allowAll,
         java.util.function.Consumer<List<String>> accept,Runnable sync){
@@ -242,15 +255,16 @@ public final class Desk {
             var q=query();var previous=result;clear();
             if(previous!=null && previous.query().equals(q))show(previous);
             if(!force && Bulk.enabled()){
-                controls(false);
-                new SwingWorker<Metrics.Result,Void>(){
+                controls(false);status.setText("正在查询…");
+                new SwingWorker<Metrics.Result,String>(){
                     String origin="网页订单报表";
                     protected Metrics.Result doInBackground()throws Exception{
-                        var exact=Store.exact(q);var group=Bulk.query(q);var bulk=group==null?null:group.result();
+                        var exact=Store.exact(q);var group=Bulk.query(q,msg->publish(msg));var bulk=group==null?null:group.result();
                         if(bulk==null)return exact!=null && Instant.parse(exact.collected()).atZone(Metrics.ZONE).toLocalDate().equals(LocalDate.now(Metrics.ZONE))?exact:null;
                         if(exact!=null && Instant.parse(exact.collected()).isAfter(Instant.parse(bulk.collected())))return exact;
                         origin=group.source();return bulk;
                     }
+                    protected void process(List<String> messages){showBrowserProgress(messages);}
                     protected void done(){controls(true);try{var r=get();if(r==null){query(true);return;}show(r);status.setText(origin+" · 点击数字查看订单");}catch(Exception ex){try{if(result==null){var old=Store.last(q);if(old!=null)show(old);}}catch(Exception ignored){}error(ex);}}
                 }.execute();return;
             }
@@ -263,7 +277,7 @@ public final class Desk {
             controls(false);status.setText("正在启动专用浏览器…");
             new SwingWorker<Metrics.Result,String>(){
                 protected Metrics.Result doInBackground()throws Exception{return Store.refresh(q,false,msg->publish(msg));}
-                protected void process(List<String> messages){status.setText(messages.get(messages.size()-1));}
+                protected void process(List<String> messages){showBrowserProgress(messages);}
                 protected void done(){controls(true);try{show(get());status.setText("已完成，点击数字查看订单");}catch(Exception ex){error(ex);}}
             }.execute();
         }catch(Exception e){error(e);}

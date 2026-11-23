@@ -85,6 +85,9 @@ final class Bulk {
         }
     }
     static GroupReports.Verified query(Metrics.Query q)throws Exception{
+        return query(q,System.out::println);
+    }
+    static GroupReports.Verified query(Metrics.Query q,java.util.function.Consumer<String> progress)throws Exception{
         if(!enabled()||!Files.isRegularFile(snapshot()))return null;
         Index meta;
         try(var zip=new ZipFile(snapshot().toFile())){
@@ -93,7 +96,7 @@ final class Bulk {
         }
         var verified=GroupReports.find(q,meta.reportDate);
         if(verified!=null)return verified;
-        return verifyGroup(q,false);
+        return verifyGroup(q,false,progress);
     }
     static Metrics.Result select(ZipFile zip,Index meta,Metrics.Query q,List<String> codes)throws Exception{
             if(codes.isEmpty())throw new IllegalArgumentException("没有匹配的启用商品");
@@ -164,6 +167,9 @@ final class Bulk {
         return checkPublished(reference);
     }
     static GroupReports.Verified verifyGroup(Metrics.Query query,boolean force)throws Exception{
+        return verifyGroup(query,force,System.out::println);
+    }
+    static GroupReports.Verified verifyGroup(Metrics.Query query,boolean force,java.util.function.Consumer<String> progress)throws Exception{
         Files.createDirectories(Store.LOCAL);
         try(var channel=java.nio.channels.FileChannel.open(Store.ROOT.resolve("collector.lock"),StandardOpenOption.CREATE,StandardOpenOption.WRITE);var lock=channel.tryLock()){
             if(lock==null)throw new IOException("采集机正在刷新，请稍后对账");
@@ -172,7 +178,7 @@ final class Bulk {
                 var known=force?null:GroupReports.find(query,meta.reportDate);if(known!=null)return known;
                 var pending=Store.LOCAL.resolve("pending").resolve(Store.key(query)+".json");
                 Store.save(pending,query);
-                var reference=Store.fetch(query,System.out::println);
+                var reference=Store.fetch(query,progress);
                 GroupReports.Verified verified;
                 if(!Objects.equals(reference.reportDate(),meta.reportDate)||query.start().compareTo(meta.start)<0||query.end().compareTo(meta.end)>0)
                     verified=GroupReports.save(reference,"网页订单报表");

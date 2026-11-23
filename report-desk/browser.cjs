@@ -489,6 +489,10 @@ async function main(){
   const ctx=await chromium.launchPersistentContext(fixture?path.join(out,'profile'):path.join(home,'AfterSalesDesk','Browser'),{executablePath:exe,headless:fixture,acceptDownloads:true,viewport:{width:1600,height:960},timeout:25000});
   try{
     const page=ctx.pages()[0]||await ctx.newPage();
+    if(!fixture){
+      emit('BROWSER_WINDOW_OPENED');
+      ctx.on('page',()=>emit('BROWSER_WINDOW_OPENED'));
+    }
     const url=checkedURL(fixture?q.fixtureURL:prefs.reportURL);
     await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000});
     if(!process.argv.includes('--batch-session'))return await runTask(ctx,page,url);
