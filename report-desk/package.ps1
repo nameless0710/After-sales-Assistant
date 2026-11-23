@@ -1,9 +1,9 @@
 ﻿param([string]$OutputFile)
 $ErrorActionPreference='Stop'
-Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression,System.IO.Compression.FileSystem
 $project=(Get-Item -LiteralPath $PSScriptRoot).Parent.FullName
 if(!$OutputFile){$OutputFile=Join-Path $project '商品售后查询台-Windows.zip'}
-$files=@('启动商品售后查询台.cmd','lib/gson-2.13.2.jar',
+$files=@('启动商品售后查询台.cmd','更新工具.cmd','update.ps1','lib/gson-2.13.2.jar',
     'report-desk/report-desk-desktop.jar','report-desk/browser.cjs','report-desk/browser-settings.json',
     'report-desk/remark-aliases.json','report-desk/daily.cmd','report-desk/启用每日刷新.ps1',
     'report-desk/验证商品归属.ps1','report-desk/使用说明.md')

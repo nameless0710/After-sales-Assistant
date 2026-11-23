@@ -7,7 +7,7 @@ Windows 桌面工具。通过 ERP 销售主题分析查询商品的实发、退�
 ```text
 .
 ├── 启动商品售后查询台.cmd          # 当前版本的启动入口
-├── 商品售后查询台-Windows.zip      # Windows 分发包
+├── 更新工具.cmd、update.ps1        # 从 GitHub 安装和同步运行文件
 ├── report-desk/                   # 当前版本
 │   ├── Desk.java                  # Swing 界面及命令行入口
 │   ├── Metrics.java、Xlsx.java     # Excel 解析、统计及明细导出
@@ -22,42 +22,25 @@ Windows 桌面工具。通过 ERP 销售主题分析查询商品的实发、退�
 │   ├── report-desk-desktop.jar    # 当前版本的构建产物
 │   └── 使用说明.md               # 操作、部署与维护说明
 ├── lib/                           # Java 依赖，目前为 Gson
-└── runtime/                       # 随包提供的 Windows Java 运行时
+└── runtime/                       # 仓库提供的 Windows Java 运行时
 ```
 
-## MVP 最小分发结构
+## 安装与更新
 
-以手动查询为范围，支持按商品、日期和仓库查询，查看订单并导出明细。按以下相对路径打包，完整复制 `runtime/` 和 `driver/`，包括其中的 DLL、依赖及许可文件。
+首次使用时，把 `更新工具.cmd` 和 `update.ps1` 放到同一个可写的 Windows 文件夹，双击 `更新工具.cmd`。更新器会通过 HTTPS 读取 GitHub 仓库 `master` 分支，下载启动脚本、应用 JAR、Java、Gson 和浏览器驱动。用户无需安装 Git、Java 或 Node.js。
 
-```text
-.
-├── 启动商品售后查询台.cmd
-├── lib/
-│   └── gson-2.13.2.jar
-├── runtime/                       # 整个目录
-└── report-desk/
-    ├── report-desk-desktop.jar
-    ├── browser.cjs
-    ├── browser-settings.json
-    ├── remark-aliases.json
-    └── driver/                    # 整个目录
-```
+安装完成后双击 `启动商品售后查询台.cmd`。每次启动都会检查 `master` 的最新提交，按文件内容比对、下载并校验发生变化的文件，然后启动查询台。网络异常时会提示并尝试打开已安装版本。执行 ERP 采集需要本机安装 Chrome 或 Edge，并能访问 ERP 的「销售主题分析」报表。首次采集时，在工具打开的专用浏览器窗口登录自己的 ERP 账号。
 
-接收方在 Windows 上完整解压，保留目录层级，双击 `启动商品售后查询台.cmd`。执行 ERP 采集需要本机安装 Chrome 或 Edge，并能访问 ERP 的「销售主题分析」报表。首次使用时，在工具打开的专用浏览器窗口登录自己的 ERP 账号。Java 和 Node.js 随包提供。
+同步会替换程序附带的 `browser-settings.json` 和 `remark-aliases.json`。如自行修改过这两个文件，更新前请备份。报表数据、ERP 登录资料和 `AFTERSALES_STORE` 指定的共享目录继续沿用。
 
-可额外附上 `report-desk/使用说明.md`。启用每日自动刷新需加入 `report-desk/daily.cmd` 和 `report-desk/启用每日刷新.ps1`。`report-desk/验证商品归属.ps1` 用于验证全商品采集模式。
+### 中国大陆网络
 
-分发时以清单选取文件。浏览器登录资料、请求抓包、真实订单导出、报表缓存和离线案例数据均留在本机。新用户的报表和浏览器资料分别保存在 `%LOCALAPPDATA%\AfterSalesDesk\data` 和 `%LOCALAPPDATA%\AfterSalesDesk\Browser`。
+如 GitHub 访问不稳定，可配置 `AFTERSALES_UPDATE_PROXY`，例如 `http://127.0.0.1:7890`。也可把维护者提供的可信 HTTPS 转发前缀写入安装根目录的 `update-source.txt`，例如 `https://updates.example.com/github/`。转发服务须接受附在前缀后的完整原始 URL，并同时支持 `api.github.com` 和 `raw.githubusercontent.com`。例如转发 `https://updates.example.com/github/https://api.github.com/repos/nameless0710/After-sales-Assistant/commits/master` 时，服务应返回原始 GitHub API 响应。旧版 `latest.json` 地址需换成新的转发前缀。
 
-## 构建与打包
+## 构建与发布
 
-仓库根目录已有 `商品售后查询台-Windows.zip`，可直接分享。它含上面的 MVP 文件，以及使用说明、每日刷新和商品归属验证脚本。
-
-源码有更新时，从仓库根目录在 PowerShell 中执行以下命令。构建需设置 `JAVA_HOME` 指向 JDK 17，也可向 `build.ps1` 传入 `-Jdk`。
+Java 源码变更后，从仓库根目录运行构建脚本，再把新的 `report-desk/report-desk-desktop.jar` 与相关变更一起提交并推送到 `master`。构建需设置 `JAVA_HOME` 指向 JDK 17，也可向 `build.ps1` 传入 `-Jdk`。用户同步的是该分支上已提交的运行文件。
 
 ```powershell
 & .\report-desk\build.ps1
-& .\report-desk\package.ps1
 ```
-
-`package.ps1` 默认重新生成根目录的 Windows 分发 ZIP。只分发手动查询功能时，按 MVP 清单取文件压缩，确保解压后的启动脚本与 `lib/`、`runtime/`、`report-desk/` 同级。
