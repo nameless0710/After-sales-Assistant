@@ -32,22 +32,57 @@ function Get-LocalPath([string]$relative) {
     return $path
 }
 
-function Invoke-UpdateRequest([string]$url,[int]$timeoutSec=10) {
+function Invoke-UpdateRequest([string]$url,[string]$operation,[int]$timeoutSec=10,[string]$destination) {
     $address=if($mirror){$mirror+$url}else{$url}
     $request=@{Uri=$address;UseBasicParsing=$true;TimeoutSec=$timeoutSec;MaximumRedirection=0;
         ErrorAction='Stop';UserAgent='After-sales-Assistant-Updater';Headers=@{Accept='application/json'}}
     if($Proxy){$request.Proxy=$Proxy}
+    if($destination){
+        $request.OutFile=$destination
+        $request.MaximumRedirection=3
+        $request.Headers.Accept='application/zip'
+    }
     $ProgressPreference='SilentlyContinue'
-    return (Invoke-WebRequest @request).Content | ConvertFrom-Json
+    try {$response=Invoke-WebRequest @request}
+    catch {
+        $server=$_.Exception.Response
+        if(!$server){throw "${operation}失败：$($_.Exception.Message)"}
+        $code=[int]$server.StatusCode
+        $detail=$_.ErrorDetails.Message
+        if($code -eq 403 -and $server -is [Net.HttpWebResponse]){
+            try {
+                $errorReader=[IO.StreamReader]::new($server.GetResponseStream(),[Text.Encoding]::UTF8)
+                try {
+                    $buffer=[char[]]::new(512)
+                    $length=$errorReader.Read($buffer,0,$buffer.Length)
+                    $detail+=[string]::new($buffer,0,$length)
+                } finally {$errorReader.Dispose()}
+            } catch { }
+        }
+        if($code -eq 429 -or $detail -match 'Rate Limit Exceeded|Too Many Requests|限流|访问频率'){
+            throw "${operation}失败：Gitee 限流（HTTP $code），请稍后重试。"
+        }
+        if($code -eq 403){
+            throw "${operation}失败：服务器拒绝请求（HTTP 403），可能是 Gitee 限流，请稍后重试。"
+        }
+        throw "${operation}失败：服务器返回 HTTP $code。"
+    }
+    if($destination){return}
+    # Gitee serves UTF-8 JSON without a charset in the Content-Type header.
+    $stream=$response.RawContentStream
+    $stream.Position=0
+    $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8)
+    try {return $reader.ReadToEnd() | ConvertFrom-Json}
+    finally {$reader.Dispose()}
 }
 
 function Get-RepositoryFiles {
-    $head=Invoke-UpdateRequest "$api/branches/$branch"
+    $head=Invoke-UpdateRequest "$api/branches/$branch" "读取 $branch 分支"
     $commit=$head.commit.sha
     if($commit -cnotmatch '^[a-f0-9]{40}$'){
         throw 'Gitee 返回的提交标识无效。'
     }
-    $tree=Invoke-UpdateRequest "$api/git/trees/$($commit)?recursive=1"
+    $tree=Invoke-UpdateRequest "$api/git/trees/$($commit)?recursive=1" '读取文件清单'
     if($tree.sha -cne $commit -or $tree.truncated -ne $false){throw '远端文件清单不完整。'}
 
     $paths=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -67,11 +102,47 @@ function Get-RepositoryFiles {
 }
 
 function Save-RepositoryBlob($entry,[string]$destination) {
-    $blob=Invoke-UpdateRequest "$api/git/blobs/$($entry.sha)" 600
+    $blob=Invoke-UpdateRequest "$api/git/blobs/$($entry.sha)" "下载 $($entry.path)" 600
     if($blob.encoding -ne 'base64' -or $null -eq $blob.content){
         throw "Gitee 返回的文件内容无效：$($entry.path)"
     }
     [IO.File]::WriteAllBytes($destination,[Convert]::FromBase64String($blob.content))
+}
+
+function Stage-RepositoryFiles($remote,$downloads,$changes,[string]$work) {
+    $snapshot=$null
+    try {
+        if($downloads.Count -ge 16 -or (-not (Test-Path -LiteralPath (Get-LocalPath 'runtime/bin/javaw.exe') -PathType Leaf))){
+            Add-Type -AssemblyName System.IO.Compression,System.IO.Compression.FileSystem
+            $snapshotPath=Join-Path $work 'repository.zip'
+            Write-Host "正在获取 Gitee 仓库快照，需同步 $($downloads.Count) 个文件 ..."
+            Invoke-UpdateRequest "https://gitee.com/$repo/repository/archive/$($remote.Commit).zip" '获取仓库快照' 600 $snapshotPath
+            $snapshot=[IO.Compression.ZipFile]::OpenRead($snapshotPath)
+            if(!$snapshot.Entries.Count){throw 'Gitee 仓库快照为空。'}
+            $firstPath=$snapshot.Entries[0].FullName
+            $prefix=if($firstPath.Contains('/')){$firstPath.Split('/')[0]+'/'}else{''}
+        }
+        $index=0
+        foreach($download in $downloads){
+            $entry=$download.Entry
+            $index++
+            Write-Progress -Activity '正在同步查询台' -Status $entry.path -PercentComplete (100*$index/$downloads.Count)
+            $incoming=Join-Path $work "$index.download"
+            if($snapshot){
+                $file=$snapshot.GetEntry($prefix+$entry.path)
+                if($null -eq $file -or $file.Length -ne $entry.size){throw "仓库快照缺少有效文件：$($entry.path)"}
+                # Use the flat staging name, never a path supplied by the archive.
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($file,$incoming)
+            } else {
+                Save-RepositoryBlob $entry $incoming
+            }
+            if(!(Test-GitBlob $incoming $entry)){throw "下载文件与 Gitee 记录不一致：$($entry.path)"}
+            $changes.Add((New-FileChange $download.Target $incoming))
+        }
+    } finally {
+        if($snapshot){$snapshot.Dispose()}
+        Write-Progress -Activity '正在同步查询台' -Completed
+    }
 }
 
 function Test-GitBlob([string]$path,$entry) {
@@ -184,18 +255,8 @@ function Sync-Desk {
     if(Test-AppRunning){throw '正在运行查询台或采集任务，关闭后再更新。'}
     $script:work=Get-LocalPath ('.update-'+[guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($work) | Out-Null
-    # Download and verify every changed file before replacing any installed file.
-    $index=0
-    foreach($download in $downloads){
-        $entry=$download.Entry
-        $index++
-        Write-Progress -Activity '正在同步查询台' -Status $entry.path -PercentComplete (100*$index/$downloads.Count)
-        $incoming=Join-Path $work "$index.download"
-        Save-RepositoryBlob $entry $incoming
-        if(!(Test-GitBlob $incoming $entry)){throw "下载文件与 Gitee 记录不一致：$($entry.path)"}
-        $changes.Add((New-FileChange $download.Target $incoming))
-    }
-    Write-Progress -Activity '正在同步查询台' -Completed
+    # Stage and verify every changed file before replacing any installed file.
+    Stage-RepositoryFiles $remote $downloads $changes $work
 
     $stagedState=Join-Path $work 'state.json'
     @{commit=$remote.Commit;files=$remote.Files} | ConvertTo-Json -Depth 4 |
@@ -203,7 +264,7 @@ function Sync-Desk {
     $changes.Add((New-FileChange $statePath $stagedState))
     if(Test-AppRunning){throw '下载期间启动了查询台或采集任务，关闭后再更新。'}
     Install-Changes $changes $work
-    Write-Host "已同步到 $($remote.Commit.Substring(0,12))，下载了 $($downloads.Count) 个文件。"
+    Write-Host "已同步到 $($remote.Commit.Substring(0,12))，同步了 $($downloads.Count) 个文件。"
 }
 
 $work=$null
